@@ -28,7 +28,7 @@ func broadcastAddress() (net.IP, error) {
 			if ip == nil {
 				continue
 			}
-			if ipNet.IP.IsPrivate() || ipNet.IP.IsLoopback() || ipNet.IP.IsLinkLocalUnicast() {
+			if ipNet.IP.IsLoopback() || ipNet.IP.IsLinkLocalUnicast() {
 				continue
 			}
 
@@ -71,7 +71,7 @@ func TestBroadcasting(t *testing.T) {
 		panic(err)
 	}
 
-	conn, err := net.DialUDP("udp", nil, udpAddr)
+	conn, err := net.ListenUDP("udp", nil)
 	if err != nil {
 		panic(err)
 	}
@@ -101,7 +101,7 @@ func TestBroadcasting(t *testing.T) {
 	fmt.Println(conn.LocalAddr())
 
 	for {
-		_, err = conn.Write(discoveryResponsePacket)
+		_, err = conn.WriteToUDP(discoveryResponsePacket, udpAddr)
 		if err != nil {
 			panic(err)
 		}

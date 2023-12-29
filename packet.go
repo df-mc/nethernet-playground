@@ -61,7 +61,7 @@ func (p *DiscoveryResponsePacket) Marshal(io protocol.IO) {
 
 type DiscoveryMessagePacket struct {
 	RecipientID uint64
-	Data        []byte
+	Data        string
 }
 
 func (p *DiscoveryMessagePacket) ID() uint16 {
@@ -70,7 +70,14 @@ func (p *DiscoveryMessagePacket) ID() uint16 {
 
 func (p *DiscoveryMessagePacket) Marshal(io protocol.IO) {
 	io.Uint64(&p.RecipientID)
-	protocol.FuncSliceUint32Length(io, &p.Data, io.Uint8)
+	if _, ok := io.(*protocol.Writer); ok {
+		s := []byte(p.Data)
+		protocol.FuncSliceUint32Length(io, &s, io.Uint8)
+	} else {
+		var s []byte
+		protocol.FuncSliceUint32Length(io, &s, io.Uint8)
+		p.Data = string(s)
+	}
 }
 
 type ServerData struct {
