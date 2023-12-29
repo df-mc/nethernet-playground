@@ -42,7 +42,57 @@ func broadcastAddress() (net.IP, error) {
 	return nil, fmt.Errorf("no suitable broadcast address found")
 }
 
+var conns = make(map[uint64]*lanConn)
+
+type lanConn struct {
+	id   uint64
+	addr *net.UDPAddr
+
+	closeChan               chan struct{}
+	discoveryMessagePackets chan *DiscoveryMessagePacket
+}
+
+func newLanConn(addr *net.UDPAddr, id uint64) *lanConn {
+	fmt.Println("New LAN connection:", addr.String())
+	l := &lanConn{
+		id:   id,
+		addr: addr,
+
+		closeChan:               make(chan struct{}),
+		discoveryMessagePackets: make(chan *DiscoveryMessagePacket),
+	}
+	go l.readLoop()
+	return l
+}
+
+func (c *lanConn) processDiscoveryMessagePacket(p *DiscoveryMessagePacket) {
+	c.discoveryMessagePackets <- p
+}
+
+func (c *lanConn) readLoop() {
+	for {
+		select {
+		case <-c.closeChan:
+			return
+		case msg := <-c.discoveryMessagePackets:
+			pretty.Println("Received discovery message packet:", msg)
+		case <-time.After(5 * time.Second):
+			fmt.Println("Connection timed out:", c.addr.String())
+			c.close()
+			return
+		}
+	}
+}
+
+func (c *lanConn) close() {
+	delete(conns, c.id)
+	close(c.discoveryMessagePackets)
+	close(c.closeChan)
+}
+
 func TestBroadcasting(t *testing.T) {
+	sessionId := rand.Uint64()
+
 	broadcastingAddress, err := broadcastAddress()
 	if err != nil {
 		panic(err)
@@ -50,7 +100,7 @@ func TestBroadcasting(t *testing.T) {
 
 	fmt.Println("Broadcasting address:", broadcastingAddress.String())
 
-	discoveryResponsePacket, err := encodeDiscoveryPacket(rand.Uint64(), &DiscoveryResponsePacket{
+	discoveryResponsePacket, err := encodeDiscoveryPacket(sessionId, &DiscoveryResponsePacket{
 		ServerData{
 			Version:        0x2,
 			ServerName:     "NetherNet Testing!",
@@ -85,15 +135,28 @@ func TestBroadcasting(t *testing.T) {
 				panic(err)
 			}
 
-			fmt.Println("Received packet from", addr.String())
-
 			pk, senderID, err := decodeDiscoveryPacket(buf[:n])
 			if err != nil {
-				panic(err)
+				// Ignore invalid packets.
+				continue
+			}
+			discoveryMessage, ok := pk.(*DiscoveryMessagePacket)
+			if !ok {
+				// Ignore non-message packets.
+				continue
+			}
+			if discoveryMessage.Data == "Ping" {
+				// For some reason, the retarded client sends a message with the text "Ping" when it first starts.
+				// We don't want to construct a new LAN connection for this, so we just ignore it.
+				continue
 			}
 
-			fmt.Println("Sender ID:", senderID)
-			pretty.Println(pk)
+			lanConn, ok := conns[senderID]
+			if !ok {
+				lanConn = newLanConn(addr, senderID)
+				conns[senderID] = lanConn
+			}
+			lanConn.processDiscoveryMessagePacket(discoveryMessage)
 		}
 	}()
 
