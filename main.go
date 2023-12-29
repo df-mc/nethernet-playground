@@ -8,22 +8,49 @@ import (
 	"github.com/pion/logging"
 	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v4"
+	"github.com/sandertv/gophertunnel/minecraft/auth"
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
+	"golang.org/x/oauth2"
 	"log"
 	"math/rand"
 	"net/http"
+	"nethernettest/playfab"
+	"nethernettest/xbxlive"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
 )
 
-const token = ``
-const webrtcNetworkId = ``
-
 func main() {
+	src := tokenSource()
+
+	pf, err := playfab.New(http.DefaultClient, src)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println("Authenticated with PlayFab.")
+	mcToken := pf.MCToken()
+
+	xb, err := xbxlive.New(http.DefaultClient, src)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println("Authenticated with Xbox Live.")
+	friends, err := xb.Friends()
+	if err != nil {
+		panic(err)
+	}
+
+	friend := friends[0]
+	webrtcNetworkId := friend.WebRTCNetworkID
+	fmt.Printf("Found friend: %s (%s)\n", friend.HostName, webrtcNetworkId)
+
 	header := http.Header{}
-	header.Add("Authorization", fmt.Sprintf("MCToken %s", token))
+	header.Add("Authorization", mcToken)
 
 	c, _, err := websocket.DefaultDialer.Dial(
 		fmt.Sprintf("wss://signal.franchise.minecraft-services.net/ws/v1.0/signaling/%d", rand.Uint64()),
@@ -34,7 +61,6 @@ func main() {
 	}
 	defer c.Close()
 
-	originSessionId := rand.Uint64()
 	sessionId := rand.Uint64()
 
 	_, message, err := c.ReadMessage()
@@ -127,10 +153,9 @@ func main() {
 	}
 
 	sctpCapabilities := sctp.GetCapabilities()
-	sctpCapabilities.MaxMessageSize = 262144 // matches client
 
 	sdpDesc := sdp.SessionDescription{
-		Origin:      sdp.Origin{Username: "-", SessionID: originSessionId, SessionVersion: 0x2, NetworkType: "IN", AddressType: "IP4", UnicastAddress: "127.0.0.1"},
+		Origin:      sdp.Origin{Username: "-", SessionID: rand.Uint64(), SessionVersion: 0x2, NetworkType: "IN", AddressType: "IP4", UnicastAddress: "127.0.0.1"},
 		SessionName: "-",
 		TimeDescriptions: []sdp.TimeDescription{
 			{},
@@ -178,7 +203,7 @@ func main() {
 
 	encodedMessage, err := json.Marshal(messageTo{
 		Message: fmt.Sprintf("CONNECTREQUEST %d %s", sessionId, encodedSdpDesc),
-		To:      webrtcNetworkId,
+		To:      json.Number(webrtcNetworkId),
 		Type:    1,
 	})
 	if err != nil {
@@ -239,7 +264,7 @@ func main() {
 
 		encodedMessage, err = json.Marshal(messageTo{
 			Message: fmt.Sprintf("CANDIDATEADD %d %s", sessionId, sb.String()),
-			To:      webrtcNetworkId,
+			To:      json.Number(webrtcNetworkId),
 			Type:    1,
 		})
 		if err != nil {
@@ -489,13 +514,28 @@ type messageFrom struct {
 	Message string `json:"Message"`
 }
 
-type webRtcConfig struct {
-	Username            string `json:"Username"`
-	Password            string `json:"Password"`
-	ExpirationInSeconds int    `json:"ExpirationInSeconds"`
-	TurnAuthServers     []struct {
-		Username string   `json:"Username"`
-		Password string   `json:"Password"`
-		Urls     []string `json:"Urls"`
-	} `json:"TurnAuthServers"`
+func tokenSource() oauth2.TokenSource {
+	token := new(oauth2.Token)
+	data, err := os.ReadFile("token.tok")
+	if err == nil {
+		_ = json.Unmarshal(data, token)
+	} else {
+		token, err = auth.RequestLiveToken()
+		if err != nil {
+			panic(err)
+		}
+	}
+	src := auth.RefreshTokenSource(token)
+	_, err = src.Token()
+	if err != nil {
+		token, err = auth.RequestLiveToken()
+		if err != nil {
+			panic(err)
+		}
+		src = auth.RefreshTokenSource(token)
+	}
+	tok, _ := src.Token()
+	b, _ := json.Marshal(tok)
+	_ = os.WriteFile("token.tok", b, 0644)
+	return src
 }

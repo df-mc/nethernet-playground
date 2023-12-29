@@ -4,19 +4,21 @@ go 1.21.1
 
 require (
 	github.com/andreburgaud/crypt2go v1.4.0
+	github.com/google/uuid v1.3.1
 	github.com/gorilla/websocket v1.5.1
 	github.com/kr/pretty v0.1.0
 	github.com/pion/logging v0.2.2
 	github.com/pion/sdp/v3 v3.0.6
 	github.com/pion/webrtc/v4 v4.0.0-beta.7
 	github.com/sandertv/gophertunnel v1.34.1
+	golang.org/x/oauth2 v0.4.0
 )
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/go-gl/mathgl v1.0.0 // indirect
+	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
-	github.com/google/uuid v1.3.1 // indirect
 	github.com/klauspost/compress v1.15.1 // indirect
 	github.com/kr/text v0.1.0 // indirect
 	github.com/pion/datachannel v1.5.5 // indirect
@@ -39,5 +41,7 @@ require (
 	golang.org/x/image v0.5.0 // indirect
 	golang.org/x/net v0.17.0 // indirect
 	golang.org/x/sys v0.13.0 // indirect
+	google.golang.org/appengine v1.6.7 // indirect
+	google.golang.org/protobuf v1.28.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

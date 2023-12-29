@@ -1,100 +1,13 @@
 package main
 
 import (
-	"bytes"
-	"crypto/hmac"
-	"crypto/sha256"
 	"fmt"
 	"github.com/kr/pretty"
-	"github.com/sandertv/gophertunnel/minecraft/protocol"
 	"math/rand"
 	"net"
 	"testing"
 	"time"
 )
-
-var packetPool = newPacketPool()
-
-func decodePacket(packetBytes []byte) (Packet, uint64, error) {
-	checksum := packetBytes[:32]
-	packetBytes = packetBytes[32:]
-
-	decrypted, err := decryptECB(packetBytes)
-	if err != nil {
-		return nil, 0, fmt.Errorf("error decrypting: %w", err)
-	}
-
-	hm := hmac.New(sha256.New, key[:])
-	hm.Write(decrypted)
-
-	ourChecksum := hm.Sum(nil)
-	if !bytes.Equal(checksum, ourChecksum) {
-		return nil, 0, fmt.Errorf("checksum mismatch: %v != %v", checksum, ourChecksum)
-	}
-
-	buf := bytes.NewBuffer(decrypted)
-	reader := protocol.NewReader(buf, 0, true)
-
-	length := buf.Len()
-
-	var givenPacketLength uint16
-	reader.Uint16(&givenPacketLength)
-
-	if int(givenPacketLength) != length {
-		return nil, 0, fmt.Errorf("packet length mismatch: %v != %v", givenPacketLength, buf.Len())
-	}
-
-	var packetType uint16
-	reader.Uint16(&packetType)
-
-	var senderID uint64
-	reader.Uint64(&senderID)
-
-	var currByte uint8
-	for i := 0; i < 8; i++ {
-		reader.Uint8(&currByte)
-	}
-
-	pk := packetPool[packetType]()
-	pk.Marshal(reader)
-	return pk, senderID, nil
-}
-
-func encodePacket(senderId uint64, pk Packet) ([]byte, error) {
-	buf := new(bytes.Buffer)
-	writer := protocol.NewWriter(buf, 0)
-
-	subBuf := new(bytes.Buffer)
-	subWriter := protocol.NewWriter(subBuf, 0)
-
-	respType := pk.ID()
-	subWriter.Uint16(&respType)
-	subWriter.Uint64(&senderId)
-
-	pad := make([]byte, 8)
-	subWriter.Bytes(&pad)
-
-	pk.Marshal(subWriter)
-
-	subBufLen := uint16(subBuf.Len()) + 2
-	writer.Uint16(&subBufLen)
-
-	subBufBytes := subBuf.Bytes()
-	writer.Bytes(&subBufBytes)
-
-	payload := buf.Bytes()
-	encrypted, err := encryptECB(payload)
-	if err != nil {
-		return nil, fmt.Errorf("error encrypting: %w", err)
-	}
-
-	hm := hmac.New(sha256.New, key[:])
-	hm.Write(payload)
-	checksum := hm.Sum(nil)
-
-	encrypted = append(checksum, encrypted...)
-	return encrypted, nil
-}
 
 func broadcastAddress() (net.IP, error) {
 	interfaces, err := net.Interfaces()
@@ -137,7 +50,7 @@ func TestBroadcasting(t *testing.T) {
 
 	fmt.Println("Broadcasting address:", broadcastingAddress.String())
 
-	discoveryResponsePacket, err := encodePacket(rand.Uint64(), &DiscoveryResponsePacket{
+	discoveryResponsePacket, err := encodeDiscoveryPacket(rand.Uint64(), &DiscoveryResponsePacket{
 		ServerData{
 			Version:        0x2,
 			ServerName:     "NetherNet Testing!",
@@ -163,6 +76,26 @@ func TestBroadcasting(t *testing.T) {
 		panic(err)
 	}
 	defer conn.Close()
+
+	go func() {
+		for {
+			buf := make([]byte, 1024)
+			n, addr, err := conn.ReadFromUDP(buf)
+			if err != nil {
+				panic(err)
+			}
+
+			fmt.Println("Received packet from", addr.String())
+
+			pk, senderID, err := decodeDiscoveryPacket(buf[:n])
+			if err != nil {
+				panic(err)
+			}
+
+			fmt.Println("Sender ID:", senderID)
+			pretty.Println(pk)
+		}
+	}()
 
 	fmt.Println("Broadcasting!")
 	fmt.Println(conn.LocalAddr())
@@ -215,7 +148,7 @@ func TestLookForBroadcasts(t *testing.T) {
 	for {
 		select {
 		case <-ticker.C:
-			discoveryRequestPacket, err := encodePacket(rand.Uint64(), &DiscoveryRequestPacket{})
+			discoveryRequestPacket, err := encodeDiscoveryPacket(rand.Uint64(), &DiscoveryRequestPacket{})
 			if err != nil {
 				panic(err)
 			}
@@ -226,7 +159,7 @@ func TestLookForBroadcasts(t *testing.T) {
 				panic(err)
 			}
 		case msg := <-messages:
-			packet, senderId, err := decodePacket(msg.data)
+			packet, senderId, err := decodeDiscoveryPacket(msg.data)
 			if err != nil {
 				panic(err)
 			}

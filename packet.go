@@ -12,7 +12,7 @@ const (
 	IDDiscoveryPacketTypeMessage
 )
 
-type Packet interface {
+type DiscoveryPacket interface {
 	protocol.Marshaler
 
 	ID() uint16
