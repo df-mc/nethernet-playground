@@ -45,17 +45,21 @@ func broadcastAddress() (net.IP, error) {
 var conns = make(map[uint64]*lanConn)
 
 type lanConn struct {
-	id   uint64
+	id     uint64
+	hostId uint64
+
 	addr *net.UDPAddr
 
 	closeChan               chan struct{}
 	discoveryMessagePackets chan *DiscoveryMessagePacket
 }
 
-func newLanConn(addr *net.UDPAddr, id uint64) *lanConn {
+func newLanConn(addr *net.UDPAddr, id, hostId uint64) *lanConn {
 	fmt.Println("New LAN connection:", addr.String())
 	l := &lanConn{
-		id:   id,
+		id:     id,
+		hostId: hostId,
+
 		addr: addr,
 
 		closeChan:               make(chan struct{}),
@@ -153,7 +157,7 @@ func TestBroadcasting(t *testing.T) {
 
 			lanConn, ok := conns[senderID]
 			if !ok {
-				lanConn = newLanConn(addr, senderID)
+				lanConn = newLanConn(addr, sessionId, senderID)
 				conns[senderID] = lanConn
 			}
 			lanConn.processDiscoveryMessagePacket(discoveryMessage)
