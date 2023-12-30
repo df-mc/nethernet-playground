@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"github.com/gorilla/websocket"
@@ -9,8 +9,6 @@ import (
 	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v4"
 	"github.com/sandertv/gophertunnel/minecraft/auth"
-	"github.com/sandertv/gophertunnel/minecraft/protocol"
-	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
 	"golang.org/x/oauth2"
 	"log"
 	"math/rand"
@@ -431,7 +429,8 @@ func main() {
 	fmt.Println("starting ice connection")
 	fmt.Println(peerIceParams)
 
-	if err = ice.Start(nil, peerIceParams, nil); err != nil {
+	role := webrtc.ICERoleControlled
+	if err = ice.Start(nil, peerIceParams, &role); err != nil {
 		panic(err)
 	}
 
@@ -444,58 +443,39 @@ func main() {
 
 	fmt.Println("starting sctp connection")
 
-	sctp.OnDataChannel(func(channel *webrtc.DataChannel) {
-		fmt.Printf("New DataChannel %s %d\n", channel.Label(), channel.ID())
-
-		// Register the handlers
-		channel.OnMessage(func(msg webrtc.DataChannelMessage) {
-			fmt.Printf("Message from DataChannel '%s': '%s'\n", channel.Label(), string(msg.Data))
-		})
-	})
 	if err = sctp.Start(peerSCTPParams); err != nil {
 		panic(err)
 	}
 
 	fmt.Println("started!")
 
-	var id uint16 = 0
-	channel, err := api.NewDataChannel(sctp, &webrtc.DataChannelParameters{
-		Label: "NetherNet",
-		ID:    &id,
-	})
+	reliableDataChannel, err := api.NewDataChannel(sctp, &webrtc.DataChannelParameters{Label: "ReliableDataChannel"})
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println("created data channel!")
-
-	channel.OnMessage(func(msg webrtc.DataChannelMessage) {
-		fmt.Printf("Message from DataChannel '%s': '%s'\n", channel.Label(), string(msg.Data))
-	})
-	channel.OnError(func(err error) {
-		panic(err)
-	})
-
-	packetEncBuf := &bytes.Buffer{}
-	enc := packet.NewEncoder(packetEncBuf)
-
-	buf := &bytes.Buffer{}
-	w := protocol.NewWriter(buf, 0)
-
-	requestNetworkSettings := &packet.RequestNetworkSettings{ClientProtocol: protocol.CurrentProtocol}
-	requestNetworkSettings.Marshal(w)
-
-	err = enc.Encode([][]byte{buf.Bytes()})
+	unreliableDataChannel, err := api.NewDataChannel(sctp, &webrtc.DataChannelParameters{Label: "UnreliableDataChannel", Ordered: false})
 	if err != nil {
 		panic(err)
 	}
 
-	err = channel.Send(packetEncBuf.Bytes())
+	fmt.Println("created channels!")
+
+	unreliableDataChannel.OnMessage(func(msg webrtc.DataChannelMessage) {
+		fmt.Printf("Unreliable Message: '%x'\n", msg.Data)
+	})
+	reliableDataChannel.OnMessage(func(msg webrtc.DataChannelMessage) {
+		fmt.Printf("Reliable Message: '%x'\n", msg.Data)
+	})
+	reliableDataChannel.OnError(func(err error) {
+		panic(err)
+	})
+
+	payload, _ := hex.DecodeString(`0006c10100000276`)
+	err = reliableDataChannel.Send(payload)
 	if err != nil {
 		panic(err)
 	}
-
-	fmt.Println("sent request network settings")
 
 	select {}
 }

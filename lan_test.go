@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"github.com/kr/pretty"
 	"github.com/pion/logging"
 	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v4"
+	"github.com/sandertv/gophertunnel/minecraft/protocol"
+	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
 	"math/rand"
 	"net"
 	"strconv"
@@ -33,7 +36,7 @@ func broadcastAddress() (net.IP, error) {
 			if ip == nil {
 				continue
 			}
-			if ipNet.IP.IsLoopback() || ipNet.IP.IsLinkLocalUnicast() {
+			if ipNet.IP.IsPrivate() || ipNet.IP.IsLoopback() || ipNet.IP.IsLinkLocalUnicast() {
 				continue
 			}
 
@@ -184,7 +187,7 @@ func (c *lanConn) readLoop() {
 					Algorithm: fingerprintParts[0],
 					Value:     fingerprintParts[1],
 				})
-				c.peerDTLSParams.Role = webrtc.DTLSRoleClient
+				c.peerDTLSParams.Role = webrtc.DTLSRoleServer
 
 				maxMessageSizeInt, err := strconv.Atoi(maxMessageSize)
 				if err != nil {
@@ -360,14 +363,11 @@ func (c *lanConn) sendConnectionInfo() {
 
 	fmt.Println("Waiting for ICE connection...")
 
-	role := webrtc.ICERoleControlling
-	if err = c.ice.Start(c.gatherer, c.peerIceParams, &role); err != nil {
+	if err = c.ice.Start(nil, c.peerIceParams, nil); err != nil {
 		panic(err)
 	}
 
 	fmt.Println("ICE connection established!")
-
-	fmt.Println("Waiting for DTLS connection...")
 
 	if err = c.dtl.Start(c.peerDTLSParams); err != nil {
 		panic(err)
@@ -375,15 +375,151 @@ func (c *lanConn) sendConnectionInfo() {
 
 	fmt.Println("DTLS connection established!")
 
-	fmt.Println("Waiting for SCTP connection...")
+	type message struct {
+		reliable bool
+		data     []byte
+	}
 
+	var (
+		reliableChannel   *webrtc.DataChannel
+		unreliableChannel *webrtc.DataChannel
+		channelsReady     = make(chan struct{})
+
+		messages = make(chan message)
+	)
 	c.sct.OnDataChannelOpened(func(channel *webrtc.DataChannel) {
-		fmt.Println("SCTP connection established!")
 		fmt.Printf("SCTP channel opened: %s\n", channel.Label())
+
+		var reliable bool
+		switch channel.Label() {
+		case "ReliableDataChannel":
+			reliableChannel = channel
+			reliable = true
+		case "UnreliableDataChannel":
+			unreliableChannel = channel
+		}
+		if reliableChannel != nil && unreliableChannel != nil {
+			close(channelsReady)
+		}
+
+		channel.OnMessage(func(msg webrtc.DataChannelMessage) {
+			messages <- message{reliable: reliable, data: msg.Data}
+		})
 	})
 	if err = c.sct.Start(c.peerSCTPParams); err != nil {
 		panic(err)
 	}
+
+	<-channelsReady
+
+	buf := make([]byte, 65535)
+	for {
+		if err = unreliableChannel.Send(buf); err != nil {
+			panic(err)
+		}
+	}
+
+	//clientPool := packet.NewClientPool()
+	//var compress bool
+	//for {
+	//	select {
+	//	case msg := <-messages:
+	//		if compress {
+	//			pretty.Println(hex.EncodeToString(msg.data))
+	//			continue
+	//		}
+	//
+	//		decodedPacket, err := decodePacket(clientPool, msg.data, compress)
+	//		if err != nil {
+	//			panic(err)
+	//		}
+	//
+	//		pretty.Printf("Received packet (reliable: %v): %v\n", msg.reliable, pretty.Sprint(decodedPacket))
+	//
+	//		switch decodedPacket.(type) {
+	//		case *packet.RequestNetworkSettings:
+	//			pk := &packet.NetworkSettings{
+	//				CompressionThreshold: 256,
+	//				CompressionAlgorithm: packet.CompressionAlgorithmFlate,
+	//			}
+	//			encodedPacket, err := encodePacket(pk, compress)
+	//			if err != nil {
+	//				panic(err)
+	//			}
+	//			compress = true
+	//			pretty.Printf("Sending packet (reliable: true): %v\n", pretty.Sprint(pk))
+	//			if err = reliableChannel.Send(encodedPacket); err != nil {
+	//				panic(err)
+	//			}
+	//		}
+	//	}
+	//}
+
+	fmt.Println("SCTP connection established!")
+}
+
+func decodePacket(pool packet.Pool, data []byte, compress bool) (packet.Packet, error) {
+	data = data[1:]
+	if compress {
+		var err error
+		if data, err = packet.FlateCompression.Decompress(data); err != nil {
+			return nil, fmt.Errorf("failed to decompress packet: %w", err)
+		}
+	}
+	buf := bytes.NewBuffer(data)
+
+	var length uint32
+	if err := protocol.Varuint32(buf, &length); err != nil {
+		return nil, fmt.Errorf("failed to read packet length: %w", err)
+	}
+
+	pkBytes := buf.Next(int(length))
+	pkBuf := bytes.NewBuffer(pkBytes)
+
+	header := &packet.Header{}
+	if err := header.Read(pkBuf); err != nil {
+		return nil, fmt.Errorf("failed to read packet header: %w", err)
+	}
+
+	pkFunc, ok := pool[header.PacketID]
+
+	var pk packet.Packet
+	if ok {
+		pk = pkFunc()
+	} else {
+		fmt.Println("Unknown packet ID:", header.PacketID)
+		pk = &packet.Unknown{PacketID: header.PacketID}
+	}
+
+	pk.Marshal(protocol.NewReader(pkBuf, 0, true))
+	return pk, nil
+}
+
+func encodePacket(pk packet.Packet, compress bool) ([]byte, error) {
+	pkBuf := bytes.NewBuffer(nil)
+	pkWriter := protocol.NewWriter(pkBuf, 0)
+
+	header := &packet.Header{PacketID: pk.ID()}
+	if err := header.Write(pkBuf); err != nil {
+		return nil, fmt.Errorf("failed to write packet header: %w", err)
+	}
+
+	pk.Marshal(pkWriter)
+
+	buf := bytes.NewBuffer(nil)
+	if err := protocol.WriteVaruint32(buf, uint32(pkBuf.Len())); err != nil {
+		return nil, fmt.Errorf("failed to write packet length: %w", err)
+	}
+	buf.Write(pkBuf.Bytes())
+
+	out := buf.Bytes()
+	if compress {
+		var err error
+		if out, err = packet.FlateCompression.Compress(out); err != nil {
+			return nil, fmt.Errorf("failed to compress packet: %w", err)
+		}
+	}
+	return append([]byte{0}, out...), nil
 }
 
 func (c *lanConn) writeDiscoveryPacket(packet DiscoveryPacket) {
