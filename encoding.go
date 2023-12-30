@@ -6,11 +6,12 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
+	"nethernettest/discovery"
 )
 
 var packetPool = newPacketPool()
 
-func decodeDiscoveryPacket(packetBytes []byte) (DiscoveryPacket, uint64, error) {
+func decodeDiscoveryPacket(packetBytes []byte) (discovery.Packet, uint64, error) {
 	checksum := packetBytes[:32]
 	packetBytes = packetBytes[32:]
 
@@ -55,7 +56,7 @@ func decodeDiscoveryPacket(packetBytes []byte) (DiscoveryPacket, uint64, error) 
 	return pk, senderID, nil
 }
 
-func encodeDiscoveryPacket(senderId uint64, pk DiscoveryPacket) ([]byte, error) {
+func encodeDiscoveryPacket(senderId uint64, pk discovery.Packet) ([]byte, error) {
 	buf := new(bytes.Buffer)
 	writer := protocol.NewWriter(buf, 0)
 

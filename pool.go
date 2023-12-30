@@ -1,18 +1,20 @@
 package main
 
-var packets = map[uint16]func() DiscoveryPacket{
-	IDDiscoveryPacketTypeRequest: func() DiscoveryPacket {
-		return &DiscoveryRequestPacket{}
+import "nethernettest/discovery"
+
+var packets = map[uint16]func() discovery.Packet{
+	discovery.IDRequest: func() discovery.Packet {
+		return &discovery.RequestPacket{}
 	},
-	IDDiscoveryPacketTypeResponse: func() DiscoveryPacket {
-		return &DiscoveryResponsePacket{}
+	discovery.IDResponse: func() discovery.Packet {
+		return &discovery.ResponsePacket{}
 	},
-	IDDiscoveryPacketTypeMessage: func() DiscoveryPacket {
-		return &DiscoveryMessagePacket{}
+	discovery.IDMessage: func() discovery.Packet {
+		return &discovery.MessagePacket{}
 	},
 }
 
-type pool map[uint16]func() DiscoveryPacket
+type pool map[uint16]func() discovery.Packet
 
 func newPacketPool() pool {
 	p := pool{}
