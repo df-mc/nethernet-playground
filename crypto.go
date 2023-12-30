@@ -4,6 +4,7 @@ import (
 	"crypto/aes"
 	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
 	"github.com/andreburgaud/crypt2go/ecb"
 	"github.com/andreburgaud/crypt2go/padding"
 )
@@ -11,6 +12,10 @@ import (
 var key = sha256.Sum256(binary.LittleEndian.AppendUint64(nil, 0xdeadbeef))
 
 func decryptECB(encryptedBytes []byte) ([]byte, error) {
+	if len(encryptedBytes)%aes.BlockSize != 0 {
+		return nil, fmt.Errorf("invalid blocksize: %v", len(encryptedBytes))
+	}
+
 	block, err := aes.NewCipher(key[:])
 	if err != nil {
 		return nil, err

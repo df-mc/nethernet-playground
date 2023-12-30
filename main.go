@@ -296,6 +296,8 @@ func main() {
 
 		closedReady bool
 		ready       = make(chan struct{})
+
+		candidates int
 	)
 	go func() {
 		for {
@@ -413,9 +415,12 @@ func main() {
 						panic(err)
 					}
 
-					if !closedReady {
-						close(ready)
-						closedReady = true
+					candidates++
+					if candidates == 4 {
+						if !closedReady {
+							close(ready)
+							closedReady = true
+						}
 					}
 				}
 			}

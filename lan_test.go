@@ -412,54 +412,66 @@ func (c *lanConn) sendConnectionInfo() {
 
 	<-channelsReady
 
-	buf := make([]byte, 65535)
+	clientPool := packet.NewClientPool()
+	var (
+		compress bool
+
+		currentPacket    []byte
+		promisedSegments uint8
+	)
 	for {
-		if err = unreliableChannel.Send(buf); err != nil {
-			panic(err)
+		select {
+		case msg := <-messages:
+			messagePromisedSegments := msg.data[0]
+			msg.data = msg.data[1:]
+
+			if promisedSegments > 0 && promisedSegments-1 != messagePromisedSegments {
+				panic(fmt.Errorf("invalid promised segments: %d != %d", promisedSegments-1, messagePromisedSegments))
+			}
+			promisedSegments = messagePromisedSegments
+
+			currentPacket = append(currentPacket, msg.data...)
+
+			if promisedSegments > 0 {
+				continue
+			}
+
+			fmt.Println("Decoding packet...")
+
+			decodedPacket, err := decodePacket(clientPool, currentPacket, compress)
+			if err != nil {
+				panic(err)
+			}
+
+			if promisedSegments == 0 {
+				currentPacket = nil
+			}
+
+			pretty.Printf("Received packet (reliable: %v): %v\n", msg.reliable, pretty.Sprint(decodedPacket))
+
+			switch decodedPacket.(type) {
+			case *packet.RequestNetworkSettings:
+				pk := &packet.NetworkSettings{
+					CompressionThreshold: 256,
+					CompressionAlgorithm: packet.CompressionAlgorithmFlate,
+				}
+				encodedPacket, err := encodePacket(pk, compress)
+				if err != nil {
+					panic(err)
+				}
+				compress = true
+				pretty.Printf("Sending packet (reliable: true): %v\n", pretty.Sprint(pk))
+				if err = reliableChannel.Send(append([]byte{0}, encodedPacket...)); err != nil { // todo: split into segments
+					panic(err)
+				}
+			}
 		}
 	}
-
-	//clientPool := packet.NewClientPool()
-	//var compress bool
-	//for {
-	//	select {
-	//	case msg := <-messages:
-	//		if compress {
-	//			pretty.Println(hex.EncodeToString(msg.data))
-	//			continue
-	//		}
-	//
-	//		decodedPacket, err := decodePacket(clientPool, msg.data, compress)
-	//		if err != nil {
-	//			panic(err)
-	//		}
-	//
-	//		pretty.Printf("Received packet (reliable: %v): %v\n", msg.reliable, pretty.Sprint(decodedPacket))
-	//
-	//		switch decodedPacket.(type) {
-	//		case *packet.RequestNetworkSettings:
-	//			pk := &packet.NetworkSettings{
-	//				CompressionThreshold: 256,
-	//				CompressionAlgorithm: packet.CompressionAlgorithmFlate,
-	//			}
-	//			encodedPacket, err := encodePacket(pk, compress)
-	//			if err != nil {
-	//				panic(err)
-	//			}
-	//			compress = true
-	//			pretty.Printf("Sending packet (reliable: true): %v\n", pretty.Sprint(pk))
-	//			if err = reliableChannel.Send(encodedPacket); err != nil {
-	//				panic(err)
-	//			}
-	//		}
-	//	}
-	//}
 
 	fmt.Println("SCTP connection established!")
 }
 
 func decodePacket(pool packet.Pool, data []byte, compress bool) (packet.Packet, error) {
-	data = data[1:]
 	if compress {
 		var err error
 		if data, err = packet.FlateCompression.Decompress(data); err != nil {
@@ -519,7 +531,7 @@ func encodePacket(pk packet.Packet, compress bool) ([]byte, error) {
 			return nil, fmt.Errorf("failed to compress packet: %w", err)
 		}
 	}
-	return append([]byte{0}, out...), nil
+	return out, nil
 }
 
 func (c *lanConn) writeDiscoveryPacket(packet DiscoveryPacket) {
