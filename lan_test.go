@@ -11,6 +11,7 @@ import (
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
 	"math/rand"
 	"net"
+	"nethernettest/discovery"
 	"strconv"
 	"strings"
 	"testing"
@@ -75,7 +76,7 @@ type lanConn struct {
 	peerSCTPParams webrtc.SCTPCapabilities
 
 	closeChan               chan struct{}
-	discoveryMessagePackets chan *DiscoveryMessagePacket
+	discoveryMessagePackets chan *discovery.MessagePacket
 }
 
 func newLanConn(conn *net.UDPConn, addr *net.UDPAddr, hostId, id uint64) (*lanConn, error) {
@@ -117,13 +118,13 @@ func newLanConn(conn *net.UDPConn, addr *net.UDPAddr, hostId, id uint64) (*lanCo
 		conn: conn,
 
 		closeChan:               make(chan struct{}),
-		discoveryMessagePackets: make(chan *DiscoveryMessagePacket),
+		discoveryMessagePackets: make(chan *discovery.MessagePacket),
 	}
 	go l.readLoop()
 	return l, nil
 }
 
-func (c *lanConn) processDiscoveryMessagePacket(p *DiscoveryMessagePacket) {
+func (c *lanConn) processDiscoveryMessagePacket(p *discovery.MessagePacket) {
 	c.discoveryMessagePackets <- p
 }
 
@@ -133,7 +134,7 @@ func (c *lanConn) readLoop() {
 		case <-c.closeChan:
 			return
 		case msg := <-c.discoveryMessagePackets:
-			messageParts := strings.Split(msg.Data, " ")
+			messageParts := strings.Split(msg.Message, " ")
 			messageId, providedSessionId, actualMessage := messageParts[0], messageParts[1], strings.Join(messageParts[2:], " ")
 			parsedProvidedSessionId, err := strconv.ParseUint(providedSessionId, 10, 64)
 			if err != nil {
@@ -346,14 +347,14 @@ func (c *lanConn) sendConnectionInfo() {
 		panic(err)
 	}
 
-	c.writeDiscoveryPacket(&DiscoveryMessagePacket{
+	c.writeDiscoveryPacket(&discovery.MessagePacket{
 		RecipientID: c.id,
-		Data:        fmt.Sprintf("CONNECTRESPONSE %d %s", c.sessionId, encodedSdpDesc),
+		Message:     fmt.Sprintf("CONNECTRESPONSE %d %s", c.sessionId, encodedSdpDesc),
 	})
 	for id, candidate := range iceCandidates {
-		c.writeDiscoveryPacket(&DiscoveryMessagePacket{
+		c.writeDiscoveryPacket(&discovery.MessagePacket{
 			RecipientID: c.id,
-			Data: fmt.Sprintf(
+			Message: fmt.Sprintf(
 				"CANDIDATEADD %d %s",
 				c.sessionId,
 				c.formatIceCandidate(id+1, candidate, iceParams),
@@ -534,7 +535,7 @@ func encodePacket(pk packet.Packet, compress bool) ([]byte, error) {
 	return out, nil
 }
 
-func (c *lanConn) writeDiscoveryPacket(packet DiscoveryPacket) {
+func (c *lanConn) writeDiscoveryPacket(packet discovery.Packet) {
 	packetBytes, err := encodeDiscoveryPacket(c.hostId, packet)
 	if err != nil {
 		panic(err)
@@ -602,17 +603,15 @@ func TestBroadcasting(t *testing.T) {
 
 	fmt.Println("Broadcasting address:", broadcastingAddress.String())
 
-	discoveryResponsePacket, err := encodeDiscoveryPacket(sessionId, &DiscoveryResponsePacket{
-		ServerData{
-			Version:        0x2,
-			ServerName:     "NetherNet Testing!",
-			LevelName:      "Tal",
-			GameType:       0,
-			Players:        1,
-			MaxPlayers:     420,
-			EditorWorld:    false,
-			TransportLayer: 2,
-		},
+	discoveryResponsePacket, err := encodeDiscoveryPacket(sessionId, &discovery.ResponsePacket{
+		NetherNetVersion: 0x2,
+		ServerName:       "NetherNet Testing!",
+		LevelName:        "Tal",
+		GameType:         0,
+		PlayerCount:      1,
+		MaxPlayers:       420,
+		EditorWorld:      false,
+		TransportLayer:   2,
 	})
 	if err != nil {
 		panic(err)
@@ -642,12 +641,12 @@ func TestBroadcasting(t *testing.T) {
 				// Ignore invalid packets.
 				continue
 			}
-			discoveryMessage, ok := pk.(*DiscoveryMessagePacket)
+			discoveryMessage, ok := pk.(*discovery.MessagePacket)
 			if !ok {
 				// Ignore non-message packets.
 				continue
 			}
-			if discoveryMessage.Data == "Ping" {
+			if discoveryMessage.Message == "Ping" {
 				// For some reason, the retarded client sends a message with the text "Ping" when it first starts.
 				// We don't want to construct a new LAN connection for this, so we just ignore it.
 				continue
@@ -716,7 +715,7 @@ func TestLookForBroadcasts(t *testing.T) {
 	for {
 		select {
 		case <-ticker.C:
-			discoveryRequestPacket, err := encodeDiscoveryPacket(rand.Uint64(), &DiscoveryRequestPacket{})
+			discoveryRequestPacket, err := encodeDiscoveryPacket(rand.Uint64(), &discovery.RequestPacket{})
 			if err != nil {
 				panic(err)
 			}
@@ -731,7 +730,7 @@ func TestLookForBroadcasts(t *testing.T) {
 			if err != nil {
 				panic(err)
 			}
-			if _, ok := packet.(*DiscoveryResponsePacket); !ok {
+			if _, ok := packet.(*discovery.ResponsePacket); !ok {
 				continue
 			}
 			pretty.Println(packet, senderId)

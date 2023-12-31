@@ -4,90 +4,64 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
-	"github.com/sandertv/gophertunnel/minecraft/protocol"
 	"nethernettest/discovery"
 )
 
-var packetPool = newPacketPool()
-
-func decodeDiscoveryPacket(packetBytes []byte) (discovery.Packet, uint64, error) {
-	checksum := packetBytes[:32]
-	packetBytes = packetBytes[32:]
-
-	decrypted, err := decryptECB(packetBytes)
+func decodeDiscoveryPacket(rawData []byte) (discovery.Packet, uint64, error) {
+	data, err := decryptECB(rawData[32:])
 	if err != nil {
 		return nil, 0, fmt.Errorf("error decrypting: %w", err)
 	}
 
 	hm := hmac.New(sha256.New, key[:])
-	hm.Write(decrypted)
-
-	ourChecksum := hm.Sum(nil)
-	if !bytes.Equal(checksum, ourChecksum) {
-		return nil, 0, fmt.Errorf("checksum mismatch: %v != %v", checksum, ourChecksum)
+	hm.Write(data)
+	if checksum := hm.Sum(nil); !bytes.Equal(rawData[:32], checksum) {
+		return nil, 0, fmt.Errorf("checksum mismatch: %v != %v", rawData[:32], checksum)
 	}
 
-	buf := bytes.NewBuffer(decrypted)
-	reader := protocol.NewReader(buf, 0, true)
-
-	length := buf.Len()
-
-	var givenPacketLength uint16
-	reader.Uint16(&givenPacketLength)
-
-	if int(givenPacketLength) != length {
-		return nil, 0, fmt.Errorf("packet length mismatch: %v != %v", givenPacketLength, buf.Len())
-	}
-
-	var packetType uint16
-	reader.Uint16(&packetType)
-
+	var length, pkID uint16
 	var senderID uint64
-	reader.Uint64(&senderID)
+	buf := bytes.NewBuffer(data)
+	_ = binary.Read(buf, binary.LittleEndian, &length)
+	_ = binary.Read(buf, binary.LittleEndian, &pkID)
+	_ = binary.Read(buf, binary.LittleEndian, &senderID)
+	buf.Next(8)
 
-	var currByte uint8
-	for i := 0; i < 8; i++ {
-		reader.Uint8(&currByte)
+	var pk discovery.Packet
+	switch pkID {
+	case discovery.IDRequest:
+		pk = &discovery.RequestPacket{}
+	case discovery.IDResponse:
+		pk = &discovery.ResponsePacket{}
+	case discovery.IDMessage:
+		pk = &discovery.MessagePacket{}
+	default:
+		return nil, 0, fmt.Errorf("unknown packet ID %v", pkID)
 	}
-
-	pk := packetPool[packetType]()
-	pk.Marshal(reader)
+	if err := pk.Read(buf); err != nil {
+		return nil, 0, fmt.Errorf("error reading packet %d: %w", pkID, err)
+	}
 	return pk, senderID, nil
 }
 
-func encodeDiscoveryPacket(senderId uint64, pk discovery.Packet) ([]byte, error) {
+func encodeDiscoveryPacket(senderID uint64, pk discovery.Packet) ([]byte, error) {
 	buf := new(bytes.Buffer)
-	writer := protocol.NewWriter(buf, 0)
+	_ = binary.Write(buf, binary.LittleEndian, pk.ID())
+	_ = binary.Write(buf, binary.LittleEndian, senderID)
+	_ = binary.Write(buf, binary.LittleEndian, make([]byte, 8))
+	pk.Write(buf)
 
-	subBuf := new(bytes.Buffer)
-	subWriter := protocol.NewWriter(subBuf, 0)
-
-	respType := pk.ID()
-	subWriter.Uint16(&respType)
-	subWriter.Uint64(&senderId)
-
-	pad := make([]byte, 8)
-	subWriter.Bytes(&pad)
-
-	pk.Marshal(subWriter)
-
-	subBufLen := uint16(subBuf.Len()) + 2
-	writer.Uint16(&subBufLen)
-
-	subBufBytes := subBuf.Bytes()
-	writer.Bytes(&subBufBytes)
-
-	payload := buf.Bytes()
-	encrypted, err := encryptECB(payload)
+	length := len(buf.Bytes())
+	payload := append([]byte{byte(length), byte(length >> 8)}, buf.Bytes()...)
+	data, err := encryptECB(payload)
 	if err != nil {
 		return nil, fmt.Errorf("error encrypting: %w", err)
 	}
 
 	hm := hmac.New(sha256.New, key[:])
 	hm.Write(payload)
-	checksum := hm.Sum(nil)
-
-	encrypted = append(checksum, encrypted...)
-	return encrypted, nil
+	data = append(hm.Sum(nil), data...)
+	return data, nil
 }
